@@ -61,7 +61,7 @@ where
             }
         }
         let ruleset = if !self.ruleset.is_empty() {
-            format!(":ruleset {}", &self.ruleset)
+            format!(":ruleset {}", self.ruleset)
         } else {
             "".into()
         };

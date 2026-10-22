@@ -226,7 +226,7 @@ pub(crate) trait MaskIter {
     }
 
     /// Iterate over the contents of the iterator.
-    fn for_each(self, mut f: impl for<'a> FnMut(Self::Item))
+    fn for_each(self, mut f: impl FnMut(Self::Item))
     where
         Self: Sized,
     {

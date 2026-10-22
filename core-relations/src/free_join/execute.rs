@@ -1919,7 +1919,7 @@ impl<'a, 'state, 'exec> JoinState<'a, 'state, 'exec> {
                         });
                         drain_updates!(updates);
                     }
-                    for (spec, prober) in rest.iter().zip(probers.into_iter()) {
+                    for (spec, prober) in rest.iter().zip(probers) {
                         binding_info.move_back(spec.atom, prober);
                     }
                 }
