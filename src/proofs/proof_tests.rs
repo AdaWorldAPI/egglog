@@ -2,11 +2,11 @@
 mod tests {
     use crate::ast::{ResolvedCommand, RuleEvalMode, sanitize_internal_names};
     use crate::proof::{Justification, ProofId, ProofStore};
+    use crate::util::HashSet;
     use crate::{
         CommandOutput, EGraph, Error, ProofEncodingUnsupportedReason, ProvedVariants, TermDag,
         TermId, add_primitive_with_validator,
     };
-    use std::collections::HashSet;
 
     fn term_encode(source: &str) -> Vec<ResolvedCommand> {
         let mut egraph = crate::EGraph::new_with_term_encoding();
@@ -386,7 +386,7 @@ mod tests {
     /// Every proof reachable from `root`, so a forgery is never applied to a node
     /// the checker does not visit.
     fn reachable_proofs(store: &ProofStore, root: ProofId) -> Vec<ProofId> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut order = vec![];
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
