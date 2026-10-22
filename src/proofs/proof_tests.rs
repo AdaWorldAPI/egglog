@@ -371,11 +371,13 @@ mod tests {
                 r#"(prove (= $start (Add (Var "x") (Mul (Var "x") (Var "y")))))"#,
             )
             .unwrap();
-        let Some(CommandOutput::ProveExists {
-            proof_store,
-            proof_id,
-        }) = outputs.into_iter().next()
-        else {
+        let Some((proof_store, proof_id)) = outputs.into_iter().find_map(|o| match o {
+            CommandOutput::ProveExists {
+                proof_store,
+                proof_id,
+            } => Some((proof_store, proof_id)),
+            _ => None,
+        }) else {
             panic!("expected a ProveExists output");
         };
         (egraph, proof_store, proof_id)
@@ -418,18 +420,32 @@ mod tests {
         let outputs = reference
             .parse_and_run_program(None, "(extract $start 20)")
             .unwrap();
-        let Some(CommandOutput::ExtractVariants(_, extracted)) = outputs.first() else {
+        // Proofs mode wraps each command in maintenance runs, so pick by type.
+        let Some(extracted) = outputs.iter().find_map(|o| match o {
+            CommandOutput::ExtractVariants(_, terms) => Some(terms),
+            _ => None,
+        }) else {
             panic!("expected ExtractVariants");
         };
         let expected_count = extracted.len();
-        assert!(expected_count > 1, "the e-class should have several e-nodes");
+        assert!(
+            expected_count > 1,
+            "the e-class should have several e-nodes"
+        );
 
         let mut egraph = variants_egraph();
         let outputs = egraph
             .parse_and_run_program(None, "(prove-variants $start 20)")
             .unwrap();
-        let [CommandOutput::UserDefined(output)] = outputs.as_slice() else {
-            panic!("expected a single user-defined output, got {outputs:?}");
+        let user_defined: Vec<_> = outputs
+            .iter()
+            .filter_map(|o| match o {
+                CommandOutput::UserDefined(output) => Some(output),
+                _ => None,
+            })
+            .collect();
+        let [output] = user_defined.as_slice() else {
+            panic!("expected exactly one user-defined output, got {outputs:?}");
         };
         let proved = output
             .as_ref()
