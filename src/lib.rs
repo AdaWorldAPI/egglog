@@ -10,6 +10,7 @@ mod exec_state;
 pub mod extract;
 pub mod prelude;
 mod proofs;
+mod prove_variants;
 
 pub mod scheduler;
 mod serialize;
@@ -18,6 +19,7 @@ mod termdag;
 mod typechecking;
 pub mod util;
 pub use command_macro::{CommandMacro, CommandMacroRegistry};
+pub use prove_variants::{ProvedVariant, ProvedVariants};
 
 // This is used to allow the `add_primitive` macro to work in
 // both this crate and other crates by referring to `::egglog`.
@@ -486,6 +488,12 @@ impl Default for EGraph {
 
         eg.rulesets
             .insert("".into(), Ruleset::Rules(Default::default()));
+
+        eg.add_command(
+            prove_variants::COMMAND_NAME.into(),
+            Arc::new(prove_variants::ProveVariants),
+        )
+        .unwrap();
 
         eg
     }

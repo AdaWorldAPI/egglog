@@ -653,6 +653,10 @@ pub(crate) fn command_supports_proof_encoding(
             proof_func: Some(_),
             ..
         } => Err(ProofEncodingUnsupportedReason::SortWithProofFuncAnnotation),
+        // `prove-variants` only re-enters `extract` and `prove`, which are supported.
+        GenericCommand::UserDefined(_, name, _) if name == crate::prove_variants::COMMAND_NAME => {
+            Ok(())
+        }
         GenericCommand::UserDefined(..) => Err(ProofEncodingUnsupportedReason::UserDefinedCommand),
         GenericCommand::Input { .. } => Err(ProofEncodingUnsupportedReason::InputCommand),
         // Extract commands can't have non-global function lookups
