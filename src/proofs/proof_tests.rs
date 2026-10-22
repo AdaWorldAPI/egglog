@@ -1,10 +1,12 @@
 #[cfg(test)]
 mod tests {
     use crate::ast::{ResolvedCommand, RuleEvalMode, sanitize_internal_names};
+    use crate::proof::{Justification, ProofId, ProofStore};
     use crate::{
-        CommandOutput, EGraph, Error, ProofEncodingUnsupportedReason, TermDag, TermId,
-        add_primitive_with_validator,
+        CommandOutput, EGraph, Error, ProofEncodingUnsupportedReason, ProvedVariants, TermDag,
+        TermId, add_primitive_with_validator,
     };
+    use std::collections::HashSet;
 
     fn term_encode(source: &str) -> Vec<ResolvedCommand> {
         let mut egraph = crate::EGraph::new_with_term_encoding();
@@ -339,5 +341,196 @@ mod tests {
             .join("\n");
 
         insta::assert_snapshot!("doc_example_add_function1", snapshot);
+    }
+
+    const VARIANTS_PROGRAM: &str = r#"
+        (datatype Math (Num i64) (Var String) (Add Math Math) (Mul Math Math))
+        (rule ((= e (Add a b))) ((union e (Add b a))) :name "add-comm")
+        (rule ((= e (Mul a (Add b c)))) ((union e (Add (Mul a b) (Mul a c)))) :name "distribute")
+        (rule ((= e (Mul a (Num 1)))) ((union e a)) :name "mul-one")
+        (let $start (Mul (Var "x") (Add (Num 1) (Var "y"))))
+        (run 4)
+    "#;
+    const START_TERM: &str = r#"(Mul (Var "x") (Add (Num 1) (Var "y")))"#;
+
+    fn variants_egraph() -> EGraph {
+        let mut egraph = EGraph::new_with_proofs();
+        egraph
+            .parse_and_run_program(None, VARIANTS_PROGRAM)
+            .unwrap();
+        egraph
+    }
+
+    /// Proves `$start = (Add (Var "x") (Mul (Var "x") (Var "y")))` and returns
+    /// the proof together with the program used to check it.
+    fn forgeable_proof() -> (EGraph, ProofStore, ProofId) {
+        let mut egraph = variants_egraph();
+        let outputs = egraph
+            .parse_and_run_program(
+                None,
+                r#"(prove (= $start (Add (Var "x") (Mul (Var "x") (Var "y")))))"#,
+            )
+            .unwrap();
+        let Some(CommandOutput::ProveExists {
+            proof_store,
+            proof_id,
+        }) = outputs.into_iter().next()
+        else {
+            panic!("expected a ProveExists output");
+        };
+        (egraph, proof_store, proof_id)
+    }
+
+    /// Every proof reachable from `root`, so a forgery is never applied to a node
+    /// the checker does not visit.
+    fn reachable_proofs(store: &ProofStore, root: ProofId) -> Vec<ProofId> {
+        let mut seen = HashSet::new();
+        let mut order = vec![];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            order.push(id);
+            match store.get(id).justification() {
+                Justification::Rule { premise_proofs, .. } => stack.extend(premise_proofs),
+                Justification::MergeFn {
+                    old_proof,
+                    new_proof,
+                    ..
+                } => stack.extend([*old_proof, *new_proof]),
+                Justification::Trans(a, b) => stack.extend([*a, *b]),
+                Justification::Sym(a) => stack.push(*a),
+                Justification::Congr {
+                    proof, child_proof, ..
+                } => stack.extend([*proof, *child_proof]),
+                Justification::ContainerNormalize { proof } => stack.push(*proof),
+                Justification::Fiat | Justification::Eval => {}
+            }
+        }
+        order
+    }
+
+    #[test]
+    fn prove_variants_proves_every_extracted_variant() {
+        // Reference: what `extract` returns on an identical e-graph.
+        let mut reference = variants_egraph();
+        let outputs = reference
+            .parse_and_run_program(None, "(extract $start 20)")
+            .unwrap();
+        let Some(CommandOutput::ExtractVariants(_, extracted)) = outputs.first() else {
+            panic!("expected ExtractVariants");
+        };
+        let expected_count = extracted.len();
+        assert!(expected_count > 1, "the e-class should have several e-nodes");
+
+        let mut egraph = variants_egraph();
+        let outputs = egraph
+            .parse_and_run_program(None, "(prove-variants $start 20)")
+            .unwrap();
+        let [CommandOutput::UserDefined(output)] = outputs.as_slice() else {
+            panic!("expected a single user-defined output, got {outputs:?}");
+        };
+        let proved = output
+            .as_ref()
+            .as_any()
+            .downcast_ref::<ProvedVariants>()
+            .expect("output should be ProvedVariants");
+        assert_eq!(proved.variants.len(), expected_count);
+
+        for variant in &proved.variants {
+            let proof = variant.proof_store.get(variant.proof_id);
+            let dag = variant.proof_store.term_dag();
+            assert_eq!(dag.to_string(proof.lhs()), START_TERM);
+            assert_eq!(dag.to_string(proof.rhs()), variant.term);
+        }
+        let rendered: HashSet<&str> = proved.variants.iter().map(|v| v.term.as_str()).collect();
+        let expected: HashSet<&str> = [
+            r#"(Add (Var "x") (Mul (Var "x") (Var "y")))"#,
+            r#"(Add (Mul (Var "x") (Var "y")) (Var "x"))"#,
+            START_TERM,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(rendered, expected);
+        assert!(proved.to_string().contains("(variant "));
+    }
+
+    #[test]
+    fn prove_variants_requires_proofs() {
+        let mut egraph = EGraph::default();
+        egraph
+            .parse_and_run_program(None, VARIANTS_PROGRAM)
+            .unwrap();
+        let err = egraph
+            .parse_and_run_program(None, "(prove-variants $start 20)")
+            .unwrap_err();
+        assert!(err.to_string().contains("proofs must be enabled"), "{err}");
+    }
+
+    #[test]
+    fn prove_variants_rejects_bad_count() {
+        let mut egraph = variants_egraph();
+        for bad in [
+            "(prove-variants $start 0)",
+            r#"(prove-variants $start "three")"#,
+            "(prove-variants $start (Num 1))",
+            "(prove-variants $start)",
+        ] {
+            assert!(
+                egraph.parse_and_run_program(None, bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn checker_rejects_a_forged_proof() {
+        let (egraph, mut store, proof_id) = forgeable_proof();
+        store
+            .check_proof(proof_id, &egraph.proof_check_program)
+            .expect("the genuine proof should check");
+
+        // Swap the rule a proof step claims to apply.
+        let mut forged = store.clone();
+        let rule_node = reachable_proofs(&forged, proof_id)
+            .into_iter()
+            .find(|id| {
+                matches!(
+                    forged.get(*id).justification(),
+                    Justification::Rule { name, .. } if name == "distribute"
+                )
+            })
+            .expect("the proof should apply `distribute`");
+        let Justification::Rule { name, .. } = &mut forged.id_to_proof[rule_node].justification
+        else {
+            unreachable!()
+        };
+        *name = "mul-one".to_string();
+        assert!(
+            forged
+                .check_proof(proof_id, &egraph.proof_check_program)
+                .is_err(),
+            "a proof citing the wrong rule must be rejected"
+        );
+
+        // Point a congruence step at the wrong child.
+        let mut forged = store.clone();
+        let congr_node = reachable_proofs(&forged, proof_id)
+            .into_iter()
+            .find(|id| matches!(forged.get(*id).justification(), Justification::Congr { .. }))
+            .expect("the proof should contain a congruence step");
+        let Justification::Congr { child_index, .. } =
+            &mut forged.id_to_proof[congr_node].justification
+        else {
+            unreachable!()
+        };
+        *child_index ^= 1;
+        assert!(
+            forged
+                .check_proof(proof_id, &egraph.proof_check_program)
+                .is_err(),
+            "a congruence step on the wrong child must be rejected"
+        );
     }
 }

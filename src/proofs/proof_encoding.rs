@@ -1661,6 +1661,11 @@ impl<'a> ProofInstrumentor<'a> {
             | ResolvedNCommand::ProveExists(..) => {
                 res.push(command.to_command().make_unresolved());
             }
+            ResolvedNCommand::UserDefined(_, name, _)
+                if name == crate::prove_variants::COMMAND_NAME =>
+            {
+                res.push(command.to_command().make_unresolved());
+            }
             ResolvedNCommand::UserDefined(..) => {
                 panic!("User defined commands unsupported in term encoding");
             }
