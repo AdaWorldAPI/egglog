@@ -395,7 +395,7 @@ impl Query<StringOrEq, String> {
     ) -> Result<Vec<Box<dyn Constraint<AtomTerm, ArcSort>>>, TypeError> {
         let mut constraints = vec![];
         for atom in self.atoms.iter() {
-            constraints.extend(atom.get_constraints(type_info, ctx)?.into_iter());
+            constraints.extend(atom.get_constraints(type_info, ctx)?);
         }
         Ok(constraints)
     }

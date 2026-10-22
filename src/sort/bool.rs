@@ -24,9 +24,10 @@ impl BaseSort for BoolSort {
             }
             Some(termdag.lit(Literal::Bool(result)))
         };
-        add_primitive_with_validator!(eg, "or" = [xs: bool] -> bool {
-            xs.fold(false, |acc, x| acc || x)
-        }, or_validator);
+        add_primitive_with_validator!(eg, "or" = [xs: bool] -> bool {{
+            let mut xs = xs;
+            xs.any(|x| x)
+        }}, or_validator);
         add_literal_prim!(eg, "xor" = |a: bool, b: bool| -> bool { a ^ b });
         add_literal_prim!(eg, "=>" = |a: bool, b: bool| -> bool { !a || b });
         // A guard primitive that fails the query if the boolean is false

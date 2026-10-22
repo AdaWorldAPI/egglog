@@ -954,17 +954,14 @@ mod inner {
         /// Subtract the counts of another multiset from this multiset, taking ownership of both and returning a new multiset.
         pub fn subtract(mut self, other: &MultiSet<T>) -> Option<MultiSet<T>> {
             for (k, v) in other.0.iter() {
-                if let Some(self_v) = self.0.get_mut(k) {
-                    if *self_v < *v {
-                        return None;
-                    }
-                    *self_v -= *v;
-                    self.1 -= *v;
-                    if *self_v == 0 {
-                        self.0.remove(k);
-                    }
-                } else {
+                let self_v = self.0.get_mut(k)?;
+                if *self_v < *v {
                     return None;
+                }
+                *self_v -= *v;
+                self.1 -= *v;
+                if *self_v == 0 {
+                    self.0.remove(k);
                 }
             }
             Some(self)
