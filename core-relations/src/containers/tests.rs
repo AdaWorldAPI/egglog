@@ -155,7 +155,7 @@ fn incremental_reinsert_canonicalizes_displaced_outer_id() {
         let target_map = env.to_id.determine_map(&container);
         let shard_mut = env.to_id.shards_mut()[target_map].get_mut();
         let (container, _) = shard_mut
-            .remove_entry(hc as u64, |(_, v)| *v.get() == old_id)
+            .remove_entry(hc, |(_, v)| *v.get() == old_id)
             .expect("container should be present before reinsertion");
 
         let mut summary = ContainerRebuildSummary::default();

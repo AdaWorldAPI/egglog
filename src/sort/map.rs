@@ -59,7 +59,9 @@ fn map_of_args_to_btreemap<'a>(
         return None;
     }
     Some(
-        args.chunks_exact(2)
+        args.as_chunks::<2>()
+            .0
+            .iter()
             .map(|kv| (termdag.ord_term(kv[0]), kv[1]))
             .collect(),
     )

@@ -38,7 +38,11 @@ impl fmt::Display for ProvedVariants {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for variant in &self.variants {
             writeln!(f, "(variant {})", variant.term)?;
-            writeln!(f, "{}", variant.proof_store.proof_to_string(variant.proof_id))?;
+            writeln!(
+                f,
+                "{}",
+                variant.proof_store.proof_to_string(variant.proof_id)
+            )?;
         }
         Ok(())
     }
@@ -54,14 +58,21 @@ pub(crate) struct ProveVariants;
 impl UserDefinedCommand for ProveVariants {
     fn update(&self, egraph: &mut EGraph, args: &[Expr]) -> Result<Vec<CommandOutput>, Error> {
         let span = args.first().map_or_else(|| span!(), |arg| arg.span());
-        let bad_args = |msg: &str| Error::DesugarError(span.clone(), format!("{COMMAND_NAME}: {msg}"));
+        let bad_args =
+            |msg: &str| Error::DesugarError(span.clone(), format!("{COMMAND_NAME}: {msg}"));
 
         let [expr, count] = args else {
-            return Err(bad_args("expected two arguments: `(prove-variants <expr> <n>)`"));
+            return Err(bad_args(
+                "expected two arguments: `(prove-variants <expr> <n>)`",
+            ));
         };
         match count {
             Expr::Lit(_, Literal::Int(n)) if *n >= 1 => {}
-            _ => return Err(bad_args("the second argument must be an integer literal >= 1")),
+            _ => {
+                return Err(bad_args(
+                    "the second argument must be an integer literal >= 1",
+                ));
+            }
         }
         if !egraph.are_proofs_enabled() {
             return Err(bad_args(
@@ -74,8 +85,11 @@ impl UserDefinedCommand for ProveVariants {
             expr.clone(),
             count.clone(),
         )])?;
-        let Some(CommandOutput::ExtractVariants(termdag, terms)) = outputs.into_iter().next()
-        else {
+        // Proofs mode wraps each command in maintenance runs, so pick by type.
+        let Some((termdag, terms)) = outputs.into_iter().find_map(|o| match o {
+            CommandOutput::ExtractVariants(termdag, terms) => Some((termdag, terms)),
+            _ => None,
+        }) else {
             return Err(bad_args("extraction did not return variants"));
         };
 
@@ -86,11 +100,13 @@ impl UserDefinedCommand for ProveVariants {
                 span.clone(),
                 vec![Fact::Eq(span.clone(), expr.clone(), variant)],
             )])?;
-            let Some(CommandOutput::ProveExists {
-                proof_store,
-                proof_id,
-            }) = outputs.into_iter().next()
-            else {
+            let Some((proof_store, proof_id)) = outputs.into_iter().find_map(|o| match o {
+                CommandOutput::ProveExists {
+                    proof_store,
+                    proof_id,
+                } => Some((proof_store, proof_id)),
+                _ => None,
+            }) else {
                 return Err(bad_args("proving a variant did not return a proof"));
             };
             variants.push(ProvedVariant {
