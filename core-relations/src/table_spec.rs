@@ -299,6 +299,25 @@ pub trait Table: Any + Send + Sync {
         )
     }
 
+    /// Visit one column of the rows in `subset` straight from the table's
+    /// storage, without materializing the rest of each row. Returns `false`,
+    /// having called nothing, when the table cannot do this for `col`; callers
+    /// then fall back to a full-row scan.
+    ///
+    /// A table whose rows contain computed columns (for example a union-find
+    /// table whose leader column is resolved on read) overrides this so a
+    /// caller reading only a stored column does not pay for computing the
+    /// others. The values and the row order must match what a full-row scan
+    /// of `subset` would report for `col`.
+    fn for_each_stored_col(
+        &self,
+        _subset: SubsetRef,
+        _col: ColumnId,
+        _f: &mut dyn FnMut(RowId, Value),
+    ) -> bool {
+        false
+    }
+
     /// Filter a given subset of the table for the rows matching the single constraint.
     ///
     /// Implementors must provide at least one of `refine_one` or `refine`.`
@@ -453,6 +472,9 @@ impl<T: Table> TableWrapper for WrapperImpl<T> {
         col: ColumnId,
         f: &mut dyn FnMut(RowId, Value),
     ) {
+        if table.for_each_stored_col(subset, col, f) {
+            return;
+        }
         let table = table.as_any().downcast_ref::<T>().unwrap();
         let col_idx = col.index();
         table.scan_generic(subset, |row_id, row| {

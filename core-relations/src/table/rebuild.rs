@@ -5,8 +5,8 @@ use std::{cmp, mem};
 use crate::numeric_id::NumericId;
 
 use crate::{
-    ColumnId, ExecutionState, Offset, OffsetRange, RowId, Subset, SubsetRef, TableId,
-    TaggedRowBuffer, Value, WrappedTable,
+    ColumnId, ExecutionState, OffsetRange, RowId, Subset, SubsetRef, TableId, TaggedRowBuffer,
+    Value, WrappedTable,
     common::HashSet,
     hash_index::{ColumnIndex, Index},
     offsets::Offsets,
@@ -172,26 +172,21 @@ impl SortedWritesTable {
                 .any(|changed| changed)
             })
         } else {
-            let mut ids = TaggedRowBuffer::new(1);
-            table.scan_project(
-                to_scan.as_ref(),
-                &[search_col],
-                Offset::new(0),
-                usize::MAX,
-                &[],
-                &mut ids,
-            );
+            // Visit the dirty ids in place, as the parallel path does: no
+            // copy of the id column, and no leader resolution for it.
             let mut scratch = TaggedRowBuffer::new(self.n_columns);
             let mut changed = false;
-            for (_, id) in ids.iter() {
-                let Some(subset) = self.rebuild_index.get_subset(&id[0]) else {
-                    continue;
-                };
-                WrappedTableRef::with_wrapper(self, |wrapped| {
-                    rebuilder.rebuild_subset(wrapped, subset, &mut scratch, exec_state);
-                });
-                changed |= subset.size() > 0;
-            }
+            WrappedTableRef::with_wrapper(self, |wrapped| {
+                table
+                    .as_ref()
+                    .for_each_col(to_scan.as_ref(), search_col, &mut |_, id| {
+                        let Some(subset) = self.rebuild_index.get_subset(&id) else {
+                            return;
+                        };
+                        rebuilder.rebuild_subset(wrapped, subset, &mut scratch, exec_state);
+                        changed |= subset.size() > 0;
+                    });
+            });
             if !scratch.is_empty() {
                 let mut write_buf = self.new_table_buffer();
                 for (row_id, row) in scratch.non_stale_mut() {
@@ -353,6 +348,81 @@ fn incremental_rebuild(dirty: usize, stale: usize, rows: usize, credit: &mut usi
 #[cfg(test)]
 mod tests {
     use super::rebuild_partition_size;
+    use crate::numeric_id::NumericId;
+    use crate::{
+        ColumnId, ExecutionState, SortedWritesTable, Value, WrappedTable,
+        table_shortcuts::v,
+        table_spec::Table,
+        uf::{DisplacedTable, EXPAND_CALLS},
+    };
+
+    /// `(key, id, ts)` rows; column 1 is rebuilt against the union-find.
+    fn id_table(rows: &[(usize, usize)]) -> SortedWritesTable {
+        empty_execution_state!(e);
+        let merge = Box::new(
+            |_: &mut ExecutionState<'_>, _: &[Value], new: &[Value], out: &mut Vec<Value>| {
+                out.clear();
+                out.extend_from_slice(new);
+                true
+            },
+        );
+        let mut t = SortedWritesTable::new(1, 3, ColumnId::new(2), vec![ColumnId::new(1)], merge);
+        for &(k, id) in rows {
+            t.new_buffer().stage_insert(&[v(k), v(id), v(1)]);
+            t.merge(&mut e);
+        }
+        t
+    }
+
+    fn contents(t: &SortedWritesTable) -> Vec<(Value, Value)> {
+        let mut out = Vec::new();
+        t.scan_generic(t.all().as_ref(), |_, row: &[Value]| {
+            out.push((row[0], row[1]))
+        });
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn serial_incremental_rebuild_reads_the_delta_without_expanding_it() {
+        empty_execution_state!(e);
+        // 8 unions (2i <- 2i+1 or the reverse) and 200 rows mentioning ids 0..32.
+        let mut uf = DisplacedTable::default();
+        {
+            let mut buf = uf.new_buffer();
+            for i in 0..8 {
+                buf.stage_insert(&[v(2 * i), v(2 * i + 1), v(1)]);
+            }
+        }
+        uf.merge(&mut e);
+        let uf = WrappedTable::new(uf);
+        let rows: Vec<(usize, usize)> = (0..200).map(|k| (k, k % 32)).collect();
+        let rebuilder = uf.rebuilder(&[ColumnId::new(1)]).expect("uf rebuilds");
+        let hint = rebuilder.hint_col().expect("uf has a hint column");
+        let next_ts = Value::new(2);
+
+        // Oracle: the full-scan rebuild of an identical table.
+        let mut full = id_table(&rows);
+        full.rebuild_nonincremental(&*rebuilder, next_ts, &mut e);
+        full.merge(&mut e);
+
+        let mut t = id_table(&rows);
+        EXPAND_CALLS.with(|c| c.set(0));
+        let changed = t.rebuild_incremental(&uf, &*rebuilder, hint, uf.all(), next_ts, &mut e);
+        assert_eq!(
+            EXPAND_CALLS.with(|c| c.get()),
+            0,
+            "the incremental rebuild expanded union-find rows to read the dirty ids"
+        );
+        t.merge(&mut e);
+        assert!(changed);
+        assert_eq!(contents(&t), contents(&full));
+        assert_ne!(
+            contents(&t),
+            contents(&id_table(&rows)),
+            "the rebuild changed nothing"
+        );
+    }
 
     #[test]
     fn rebuild_partitions_are_coarse_and_nonzero() {
