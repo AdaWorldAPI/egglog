@@ -20,8 +20,7 @@ use dashmap::SharedValue;
 use rustc_hash::FxHasher;
 
 use crate::{
-    ColumnId, CounterId, ExecutionState, Offset, SubsetRef, TableId, TaggedRowBuffer, Value,
-    WrappedTable,
+    ColumnId, CounterId, ExecutionState, SubsetRef, TableId, Value, WrappedTable,
     common::{DashMap, IndexSet, SubsetTracker},
     parallel,
     parallel_heuristics::{parallelize_inter_container_op, parallelize_intra_container_op},
@@ -514,24 +513,17 @@ impl<C: ContainerValue> ContainerEnv<C> {
         // total number of ids to rebuild is small, in which case the overhead of parallelism may
         // not be worth it in the first place.
         let mut summary = ContainerRebuildSummary::default();
-        let mut buf = TaggedRowBuffer::new(1);
-        table.scan_project(
-            to_scan,
-            &[search_col],
-            Offset::new(0),
-            usize::MAX,
-            &[],
-            &mut buf,
-        );
-        // For each value in the buffer, rebuild all containers that mention it.
+        // For each dirty id, rebuild all containers that mention it. The ids
+        // are read in place: no copy of the column, no leader resolution.
         let mut to_rebuild = IndexSet::<Value>::default();
-        for (_, row) in buf.iter() {
-            to_rebuild.insert(row[0]);
-            let Some(ids) = self.val_index.get(&row[0]) else {
-                continue;
-            };
-            to_rebuild.extend(&*ids);
-        }
+        table
+            .as_ref()
+            .for_each_col(to_scan, search_col, &mut |_, id| {
+                to_rebuild.insert(id);
+                if let Some(ids) = self.val_index.get(&id) {
+                    to_rebuild.extend(&*ids);
+                }
+            });
         for id in to_rebuild {
             let Some((hc, target_map)) = self.to_container.get(&id).map(|x| *x) else {
                 continue;

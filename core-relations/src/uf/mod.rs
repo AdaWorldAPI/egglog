@@ -278,6 +278,26 @@ impl Table for DisplacedTable {
     fn dyn_clone(&self) -> Box<dyn Table> {
         Box::new(self.clone())
     }
+    /// Columns 0 (the displaced child) and 2 (the timestamp) are stored;
+    /// column 1 (the leader) is resolved by the union-find on read, so it is
+    /// not served here.
+    fn for_each_stored_col(
+        &self,
+        subset: SubsetRef,
+        col: ColumnId,
+        f: &mut dyn FnMut(RowId, Value),
+    ) -> bool {
+        let pick: fn(&(Value, Value)) -> Value = match col.index() {
+            0 => |(child, _)| *child,
+            2 => |(_, ts)| *ts,
+            _ => return false,
+        };
+        // Same walk as `scan_generic_bounded` with no constraints.
+        subset.iter_bounded(0, usize::MAX, |row| {
+            f(row, pick(&self.displaced[row.index()]))
+        });
+        true
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -544,6 +564,13 @@ impl Table for DisplacedTable {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many rows were expanded (leader resolved) on this thread. Tests
+    /// reset it to check that a column-only reader did not expand rows.
+    pub(crate) static EXPAND_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl DisplacedTable {
     fn take_change(&mut self) -> TableChange {
         let changed = mem::take(&mut self.changed);
@@ -554,6 +581,8 @@ impl DisplacedTable {
         &self.uf
     }
     fn expand(&self, row: RowId) -> [Value; 3] {
+        #[cfg(test)]
+        EXPAND_CALLS.with(|c| c.set(c.get() + 1));
         let (child, ts) = self.displaced[row.index()];
         [child, self.uf.find_naive(child), ts]
     }

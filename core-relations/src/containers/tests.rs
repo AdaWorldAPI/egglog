@@ -222,3 +222,47 @@ fn nonincremental_dirty_ids_only_include_stable_ids() {
     run_case(false);
     run_case(true);
 }
+
+#[test]
+fn incremental_container_rebuild_reads_the_delta_without_expanding_it() {
+    use crate::table_spec::{Table, WrappedTable};
+    use crate::uf::{DisplacedTable, EXPAND_CALLS};
+
+    let mut db = Database::new();
+    let counter = db.add_counter();
+    let mut env = ContainerEnv::<VecContainer>::new(Box::new(|_state, v1, _v2| v1), counter);
+    db.with_execution_state(None, |es| {
+        // Unions (2i, 2i+1) for i < 8, and one container per id 0..16.
+        let mut uf = DisplacedTable::default();
+        {
+            let mut buf = uf.new_buffer();
+            for i in 0..8 {
+                buf.stage_insert(&[
+                    Value::from_usize(2 * i),
+                    Value::from_usize(2 * i + 1),
+                    Value::from_usize(1),
+                ]);
+            }
+        }
+        uf.merge(es);
+        let uf = WrappedTable::new(uf);
+        for i in 0..16 {
+            env.get_or_insert(&VecContainer(vec![Value::from_usize(i)]), es);
+        }
+        let rebuilder = uf.rebuilder(&[ColumnId::new(0)]).expect("uf rebuilds");
+        let all = uf.all();
+
+        EXPAND_CALLS.with(|c| c.set(0));
+        let summary =
+            env.apply_rebuild_incremental(&uf, &*rebuilder, es, all.as_ref(), ColumnId::new(0));
+        assert_eq!(
+            EXPAND_CALLS.with(|c| c.get()),
+            0,
+            "the incremental container rebuild expanded union-find rows to read the dirty ids"
+        );
+        assert!(
+            summary.changed(),
+            "eight displaced ids must rewrite their containers"
+        );
+    });
+}

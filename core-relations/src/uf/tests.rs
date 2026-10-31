@@ -169,3 +169,58 @@ fn parallel_merge_matches_serial_timestamp_oracle() {
     });
     assert!(expected.is_empty());
 }
+
+/// Unions `(2i, 2i+1)` for `i < n`, all at timestamp 1.
+fn unions(n: usize) -> DisplacedTable {
+    empty_execution_state!(e);
+    let mut d = DisplacedTable::default();
+    {
+        let mut buf = d.new_buffer();
+        for i in 0..n {
+            buf.stage_insert(&[v(2 * i), v(2 * i + 1), v(1)]);
+        }
+    }
+    d.merge(&mut e);
+    d
+}
+
+#[test]
+fn stored_columns_are_read_without_expanding_rows() {
+    use super::EXPAND_CALLS;
+    use crate::table_spec::WrappedTable;
+
+    let d = unions(16);
+    let mut scanned = Vec::new();
+    d.scan_generic(d.all().as_ref(), |id, row| scanned.push((id, row.to_vec())));
+    let table = WrappedTable::new(d);
+    let all = table.all();
+
+    for col in [0usize, 2] {
+        EXPAND_CALLS.with(|c| c.set(0));
+        let mut got = Vec::new();
+        table
+            .as_ref()
+            .for_each_col(all.as_ref(), ColumnId::from_usize(col), &mut |id, val| {
+                got.push((id, val))
+            });
+        assert_eq!(
+            EXPAND_CALLS.with(|c| c.get()),
+            0,
+            "column {col} expanded rows"
+        );
+        let want: Vec<_> = scanned.iter().map(|(id, row)| (*id, row[col])).collect();
+        assert_eq!(got, want, "column {col} differs from a full-row scan");
+    }
+
+    // The leader column is computed, so it still expands: the counter can fire.
+    EXPAND_CALLS.with(|c| c.set(0));
+    let mut leaders = Vec::new();
+    table
+        .as_ref()
+        .for_each_col(all.as_ref(), ColumnId::new(1), &mut |_, val| {
+            leaders.push(val)
+        });
+    assert_eq!(EXPAND_CALLS.with(|c| c.get()), scanned.len());
+    let want: Vec<_> = scanned.iter().map(|(_, row)| row[1]).collect();
+    assert_eq!(leaders, want);
+}
